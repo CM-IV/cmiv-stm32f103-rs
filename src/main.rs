@@ -15,6 +15,12 @@ use embassy_time::{Delay, Timer};
 use i2c_character_display::{CharacterDisplayPCF8574T, LcdDisplayType};
 use panic_probe as _;
 
+#[derive(Debug, defmt::Format)]
+enum LcdError {
+    CommandFailed,
+    InitFailed,
+}
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Init");
@@ -25,58 +31,37 @@ async fn main(_spawner: Spawner) {
 
     let i2c = I2c::new_blocking(p.I2C2, p.PB10, p.PB11, Hertz(50_000), Default::default());
 
-    begin_lcd_commands(i2c, &mut led).await;
-
-    loop {
-        info!("Running!");
-
-        led.set_high();
-
-        Timer::after_millis(3000).await;
-
-        led.set_low();
-
-        Timer::after_millis(3000).await;
+    match begin_lcd_commands(i2c).await {
+        Ok(_) => info!("LCD initialized successfully"),
+        Err(e) => {
+            error!("LCD error: {:?}", e);
+            loop {
+                led.set_high();
+                Timer::after_millis(1000).await;
+                led.set_low();
+                Timer::after_millis(1000).await;
+            }
+        }
     }
 }
 
-async fn begin_lcd_commands(i2c: I2c<'static, Blocking>, led: &mut Output<'static>) {
+async fn begin_lcd_commands(i2c: I2c<'static, Blocking>) -> Result<(), LcdError> {
     let mut lcd =
         CharacterDisplayPCF8574T::new_with_address(i2c, 0x27, LcdDisplayType::Lcd16x2, Delay);
 
-    match lcd.init() {
-        Ok(_) => {
-            // Commands go in here vvv
-            if let Err(_) = lcd.backlight(true) {
-                error!("Error starting backlight");
-            }
-            if let Err(_) = lcd.clear() {
-                error!("Error clearing LCD");
-            }
-            if let Err(_) = lcd.home() {
-                error!("Error setting cursor to home");
-            }
+    lcd.init().map_err(|_| {
+        error!("LCD init failed");
+        LcdError::InitFailed
+    })?;
 
-            if let Err(_) = lcd.print("Hello Charlie!") {
-                error!("Error printing!");
-            }
+    // Commands go in here vvv
+    lcd.backlight(true).map_err(|_| LcdError::CommandFailed)?;
+    lcd.clear().map_err(|_| LcdError::CommandFailed)?;
+    lcd.home().map_err(|_| LcdError::CommandFailed)?;
+    lcd.print("Hello Charlie!")
+        .map_err(|_| LcdError::CommandFailed)?;
+    lcd.blink_cursor(true)
+        .map_err(|_| LcdError::CommandFailed)?;
 
-            if let Err(_) = lcd.show_cursor(true) {
-                error!("Error showing cursor!");
-            }
-
-            if let Err(_) = lcd.blink_cursor(true) {
-                error!("Error blinking cursor!");
-            }
-        }
-        Err(_) => {
-            led.set_high();
-
-            Timer::after_millis(1000).await;
-
-            led.set_low();
-
-            Timer::after_millis(1000).await;
-        }
-    }
+    Ok(())
 }
