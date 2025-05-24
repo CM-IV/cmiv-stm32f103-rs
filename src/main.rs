@@ -43,6 +43,11 @@ async fn main(_spawner: Spawner) {
             }
         }
     }
+
+    loop {
+        info!("Running!");
+        Timer::after_millis(3000).await;
+    }
 }
 
 async fn begin_lcd_commands(i2c: I2c<'static, Blocking>) -> Result<(), LcdError> {
