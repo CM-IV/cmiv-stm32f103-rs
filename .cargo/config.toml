@@ -3,16 +3,14 @@ runner = [
     "probe-rs",
     "run",
     "--chip",
-    "stm32f103c8",
-    "--log-format",
-    "{t} {L} {s}",
+    "stm32f103c8"
 ]
 
 rustflags = [
     "-C",
     "link-arg=-Tlink.x",
-    "-C",
-    "link-arg=-Tdefmt.x",
+    # "-C",
+    # "link-arg=-Tdefmt.x",
     "-C",
     "link-arg=--nmagic",
 ]

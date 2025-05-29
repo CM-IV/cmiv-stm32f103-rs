@@ -1,0 +1,275 @@
+#![deny(unsafe_code)]
+#![no_main]
+#![no_std]
+
+use embassy_executor::Spawner;
+use embassy_stm32::{
+    gpio::{Level, Output, OutputOpenDrain, Speed},
+    i2c::I2c,
+    mode::Blocking,
+    time::Hertz,
+};
+use embassy_time::{Delay, Duration, Timer};
+use i2c_character_display::{CharacterDisplayPCF8574T, LcdDisplayType};
+use onewire::{DS18B20, DeviceSearch, OneWire};
+use panic_probe as _;
+
+#[derive(Debug)]
+enum AppError {
+    LcdCommandFailed,
+    LcdInitFailed,
+    OneWireError,
+    SensorNotFound,
+    FamilyCode,
+    TemperatureReadError,
+}
+
+struct AppState {
+    led: Output<'static>,
+    sensor_present: bool,
+    current_temp: Option<f32>,
+    last_update: u64,
+}
+
+impl AppState {
+    fn new(led: Output<'static>) -> Self {
+        Self {
+            led,
+            sensor_present: false,
+            current_temp: None,
+            last_update: 0,
+        }
+    }
+}
+
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    let p = embassy_stm32::init(Default::default());
+
+    let led = Output::new(p.PA7, Level::Low, Speed::Low);
+    let ow_pin = OutputOpenDrain::new(p.PA6, Level::Low, Speed::Low);
+
+    let i2c = I2c::new_blocking(p.I2C2, p.PB10, p.PB11, Hertz(50_000), Default::default());
+
+    let mut app_state = AppState::new(led);
+
+    if run_main_loop(i2c, ow_pin, &mut app_state).await.is_err() {
+        blink_error_led(&mut app_state.led).await;
+    }
+}
+
+async fn run_main_loop(
+    i2c: I2c<'static, Blocking>,
+    mut ow_pin: OutputOpenDrain<'static>,
+    app_state: &mut AppState,
+) -> Result<(), AppError> {
+    let mut lcd =
+        CharacterDisplayPCF8574T::new_with_address(i2c, 0x27, LcdDisplayType::Lcd16x2, Delay);
+
+    lcd.init().map_err(|_| AppError::LcdInitFailed)?;
+    lcd.backlight(true)
+        .map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.clear().map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.home().map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.print("Temp Monitor")
+        .map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.set_cursor(0, 1)
+        .map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.print("Searching...")
+        .map_err(|_| AppError::LcdCommandFailed)?;
+
+    let mut wire = OneWire::new(&mut ow_pin, false);
+
+    test_onewire_bus(&mut wire, &mut lcd).await?;
+
+    // Main application loop
+    let mut now = 0;
+    let update_interval = 2000;
+
+    loop {
+        now += update_interval;
+        app_state.last_update = now;
+
+        match read_temperature(&mut wire).await {
+            Ok(temp) => {
+                app_state.sensor_present = true;
+                app_state.current_temp = Some(temp);
+            }
+            Err(AppError::SensorNotFound) => {
+                app_state.sensor_present = false;
+                app_state.current_temp = None;
+            }
+            Err(_) => {
+                app_state.sensor_present = false;
+            }
+        }
+
+        update_display(&mut lcd, app_state)?;
+
+        Timer::after_millis(update_interval).await;
+    }
+}
+
+async fn test_onewire_bus(
+    wire: &mut OneWire<&mut OutputOpenDrain<'static>>,
+    lcd: &mut CharacterDisplayPCF8574T<I2c<'static, Blocking>, Delay>,
+) -> Result<(), AppError> {
+    lcd.clear().map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.home().map_err(|_| AppError::LcdCommandFailed)?;
+
+    let mut resets_ok = 0;
+    for _ in 0..5 {
+        match wire.reset(&mut Delay) {
+            Ok(true) => {
+                resets_ok += 1;
+                Timer::after_millis(10).await; // Small delay between resets
+            }
+            _ => break,
+        }
+    }
+
+    lcd.print("Resets: ")
+        .map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.print(itoa::Buffer::new().format(resets_ok))
+        .map_err(|_| AppError::LcdCommandFailed)?;
+
+    if resets_ok == 5 {
+        // Try ROM search
+        let mut search = DeviceSearch::new();
+        let mut devices_found = 0;
+
+        for _ in 0..5 {
+            if let Ok(Some(dev)) = wire.search_next(&mut search, &mut Delay) {
+                devices_found += 1;
+                lcd.set_cursor(0, 1)
+                    .map_err(|_| AppError::LcdCommandFailed)?;
+                lcd.print("Fam: 0x")
+                    .map_err(|_| AppError::LcdCommandFailed)?;
+                lcd.print(itoa::Buffer::new().format(dev.family_code()))
+                    .map_err(|_| AppError::LcdCommandFailed)?;
+                break;
+            }
+            Timer::after_millis(100).await;
+        }
+
+        if devices_found == 0 {
+            lcd.set_cursor(0, 1)
+                .map_err(|_| AppError::LcdCommandFailed)?;
+            lcd.print("No devices")
+                .map_err(|_| AppError::LcdCommandFailed)?;
+        }
+    }
+
+    Timer::after_millis(3000).await;
+    Ok(())
+}
+
+async fn read_temperature(
+    wire: &mut OneWire<&mut OutputOpenDrain<'static>>,
+) -> Result<f32, AppError> {
+    let mut search = DeviceSearch::new();
+    let mut device = None;
+
+    for _ in 0..20 {
+        match wire.search_next(&mut search, &mut Delay) {
+            Ok(Some(dev)) => {
+                device = Some(dev);
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => {}
+        }
+        Timer::after_millis(1000).await;
+    }
+
+    let device = device.ok_or(AppError::SensorNotFound)?;
+
+    if device.family_code() != 0x28 {
+        return Err(AppError::FamilyCode);
+    }
+
+    let sensor = DS18B20::new(device).map_err(|_| AppError::OneWireError)?;
+
+    let resolution = sensor
+        .measure_temperature(wire, &mut Delay)
+        .map_err(|_| AppError::TemperatureReadError)?;
+
+    Timer::after(Duration::from_millis(resolution.time_ms() as u64)).await;
+
+    let raw_temperature = sensor
+        .read_temperature(wire, &mut Delay)
+        .map_err(|_| AppError::TemperatureReadError)?;
+
+    let (integer, fraction) = onewire::ds18b20::split_temp(raw_temperature);
+    let temperature = (integer as f32) + (fraction as f32) / 10000.0;
+
+    Ok(temperature)
+}
+
+fn update_display(
+    lcd: &mut CharacterDisplayPCF8574T<I2c<'static, Blocking>, Delay>,
+    app_state: &AppState,
+) -> Result<(), AppError> {
+    lcd.home().map_err(|_| AppError::LcdCommandFailed)?;
+    lcd.print("Temperature:")
+        .map_err(|_| AppError::LcdCommandFailed)?;
+
+    lcd.set_cursor(0, 1)
+        .map_err(|_| AppError::LcdCommandFailed)?;
+
+    if app_state.sensor_present {
+        if let Some(temp) = app_state.current_temp {
+            // Format temperature with 1 decimal place
+            let temp_int = temp as i32;
+            let temp_frac = ((temp - temp_int as f32) * 10.0) as u32;
+
+            // Clear the line first
+            lcd.print("                ")
+                .map_err(|_| AppError::LcdCommandFailed)?;
+            lcd.set_cursor(0, 1)
+                .map_err(|_| AppError::LcdCommandFailed)?;
+
+            // Display temperature with unit
+            let mut buffer = [0u8; 16];
+            let temp_str = format_temp_to_slice(temp_int, temp_frac, &mut buffer);
+            lcd.print(temp_str)
+                .map_err(|_| AppError::LcdCommandFailed)?;
+        } else {
+            lcd.print("Reading...      ")
+                .map_err(|_| AppError::LcdCommandFailed)?;
+        }
+    } else {
+        lcd.print("Sensor not found!")
+            .map_err(|_| AppError::LcdCommandFailed)?;
+    }
+
+    Ok(())
+}
+
+fn format_temp_to_slice(temp_int: i32, temp_frac: u32, buffer: &mut [u8]) -> &str {
+    use core::fmt::Write;
+
+    let mut w = arrayvec::ArrayString::<16>::new();
+
+    if temp_int < 0 {
+        write!(w, "-{}.{}C", -temp_int, temp_frac).unwrap();
+    } else {
+        write!(w, "{}.{}C", temp_int, temp_frac).unwrap();
+    }
+
+    let bytes = w.as_bytes();
+    let len = bytes.len().min(buffer.len());
+    buffer[..len].copy_from_slice(&bytes[..len]);
+
+    // Convert back to str
+    core::str::from_utf8(&buffer[..len]).unwrap_or("Err")
+}
+
+async fn blink_error_led(led: &mut Output<'static>) -> ! {
+    loop {
+        led.set_high();
+        Timer::after_millis(1000).await;
+        led.set_low();
+        Timer::after_millis(1000).await;
+    }
+}

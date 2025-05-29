@@ -1,0 +1,176 @@
+#![deny(unsafe_code)]
+#![no_main]
+#![no_std]
+
+use defmt::info;
+use defmt_rtt as _;
+use embassy_executor::Spawner;
+use embassy_stm32::{
+    gpio::{Level, Output, Speed},
+    i2c::I2c,
+    time::Hertz,
+};
+use embassy_time::Timer;
+use i2c_scanner::I2CScanner;
+use panic_probe as _;
+
+// Morse code timing constants (in milliseconds)
+// These are slower than standard Morse to make it easier to measure with a multimeter
+const DOT_DURATION: u64 = 500; // 0.5 seconds for a dot
+const DASH_DURATION: u64 = 1500; // 1.5 seconds for a dash
+const ELEMENT_GAP: u64 = 500; // Gap between dots/dashes in the same digit
+const DIGIT_GAP: u64 = 1500; // Gap between digits
+const SEQUENCE_GAP: u64 = 3000; // Gap between repeated sequences
+
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    info!("Starting I2C Scanner with Morse Code Output...");
+
+    let p = embassy_stm32::init(Default::default());
+
+    let mut led = Output::new(p.PA6, Level::Low, Speed::Low);
+
+    let i2c = I2c::new_blocking(p.I2C2, p.PB10, p.PB11, Hertz(400_000), Default::default());
+
+    let mut scanner = I2CScanner::new(i2c);
+
+    loop {
+        info!("Scanning I2C bus...");
+
+        // Blink rapidly to indicate scan is starting
+        for _ in 0..5 {
+            led.set_high();
+            Timer::after_millis(100).await;
+            led.set_low();
+            Timer::after_millis(100).await;
+        }
+
+        // Scan specifically for LCD backpack addresses (0x20-0x27)
+        match scanner.scan_range(0x20, 0x27) {
+            Ok(result) => {
+                if result.is_empty() {
+                    info!("No devices found in range 0x20-0x27");
+
+                    // Blink SOS pattern to indicate no devices found
+                    for _ in 0..3 {
+                        blink_morse_sos(&mut led).await;
+                        Timer::after_millis(SEQUENCE_GAP).await;
+                    }
+                } else {
+                    info!("Found {} devices", result.device_count());
+
+                    // Blink each address in Morse code
+                    for device in result.devices.iter() {
+                        info!("Device at address: 0x{:02X}", device.address);
+
+                        // Blink the address in hexadecimal
+                        blink_morse_address(&mut led, device.address).await;
+
+                        // Wait between addresses
+                        Timer::after_millis(SEQUENCE_GAP).await;
+                    }
+                }
+            }
+            Err(_) => {
+                info!("Error scanning I2C bus");
+
+                // Blink error pattern
+                for _ in 0..10 {
+                    led.set_high();
+                    Timer::after_millis(100).await;
+                    led.set_low();
+                    Timer::after_millis(100).await;
+                }
+            }
+        }
+
+        // Wait before next scan
+        Timer::after_millis(5000).await;
+    }
+}
+
+/// Blinks an address in Morse code (hexadecimal)
+async fn blink_morse_address(led: &mut Output<'_>, address: u8) {
+    // Convert address to hex string
+    let high_nibble = address >> 4;
+    let low_nibble = address & 0x0F;
+
+    // Blink "0x" prefix
+    blink_morse_digit(led, 0).await;
+    Timer::after_millis(DIGIT_GAP).await;
+    blink_morse_x(led).await;
+    Timer::after_millis(DIGIT_GAP).await;
+
+    // Blink high nibble
+    blink_morse_digit(led, high_nibble).await;
+    Timer::after_millis(DIGIT_GAP).await;
+
+    // Blink low nibble
+    blink_morse_digit(led, low_nibble).await;
+}
+
+/// Blinks a single hexadecimal digit in Morse code
+async fn blink_morse_digit(led: &mut Output<'_>, digit: u8) {
+    match digit {
+        0 => blink_morse_pattern(led, "-----").await, // 0 is five dashes
+        1 => blink_morse_pattern(led, ".----").await, // 1 is dot + four dashes
+        2 => blink_morse_pattern(led, "..---").await, // 2 is two dots + three dashes
+        3 => blink_morse_pattern(led, "...--").await, // 3 is three dots + two dashes
+        4 => blink_morse_pattern(led, "....-").await, // 4 is four dots + one dash
+        5 => blink_morse_pattern(led, ".....").await, // 5 is five dots
+        6 => blink_morse_pattern(led, "-....").await, // 6 is dash + four dots
+        7 => blink_morse_pattern(led, "--...").await, // 7 is two dashes + three dots
+        8 => blink_morse_pattern(led, "---..").await, // 8 is three dashes + two dots
+        9 => blink_morse_pattern(led, "----.").await, // 9 is four dashes + one dot
+        10 => blink_morse_pattern(led, ".-").await,   // A is dot + dash
+        11 => blink_morse_pattern(led, "-...").await, // B is dash + three dots
+        12 => blink_morse_pattern(led, "-.-.").await, // C is dash + dot + dash + dot
+        13 => blink_morse_pattern(led, "-..").await,  // D is dash + two dots
+        14 => blink_morse_pattern(led, ".").await,    // E is one dot
+        15 => blink_morse_pattern(led, "..-.").await, // F is two dots + dash + dot
+        _ => {}
+    }
+}
+
+/// Blinks the letter 'X' in Morse code (for the "0x" prefix)
+async fn blink_morse_x(led: &mut Output<'_>) {
+    blink_morse_pattern(led, "-..-").await; // X is dash + dot + dot + dash
+}
+
+/// Blinks SOS in Morse code
+async fn blink_morse_sos(led: &mut Output<'_>) {
+    // S = ...
+    blink_morse_pattern(led, "...").await;
+    Timer::after_millis(DIGIT_GAP).await;
+
+    // O = ---
+    blink_morse_pattern(led, "---").await;
+    Timer::after_millis(DIGIT_GAP).await;
+
+    // S = ...
+    blink_morse_pattern(led, "...").await;
+}
+
+/// Blinks a Morse code pattern where '.' is a dot and '-' is a dash
+async fn blink_morse_pattern(led: &mut Output<'_>, pattern: &str) {
+    for c in pattern.chars() {
+        match c {
+            '.' => {
+                // Dot - short blink
+                led.set_high();
+                Timer::after_millis(DOT_DURATION).await;
+                led.set_low();
+            }
+            '-' => {
+                // Dash - long blink
+                led.set_high();
+                Timer::after_millis(DASH_DURATION).await;
+                led.set_low();
+            }
+            _ => {}
+        }
+
+        // Gap between elements (dots/dashes)
+        Timer::after_millis(ELEMENT_GAP).await;
+    }
+}

@@ -6,30 +6,26 @@ edition = "2024"
 [dependencies]
 cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7.5"
-defmt = "1.0.1"
-defmt-rtt = "1.0.0"
 embassy-executor = { version = "0.7.0", features = [
     "arch-cortex-m",
     "executor-thread",
     "executor-interrupt",
-    "defmt",
 ] }
 embassy-stm32 = { version = "0.2.0", features = [
     "unstable-pac",
-    "defmt",
     "memory-x",
     "time-driver-any",
     "stm32f103c8",
 ] }
-embassy-time = { version = "0.4.0", features = [
-    "defmt",
-    "defmt-timestamp-uptime",
-] }
-# lcd-i2c = { git = "https://github.com/CM-IV/i2c-lcd.git", rev = "6ce8ca7" }
-i2c-character-display = { version = "0.4", features = ["defmt"] }
-panic-probe = { version = "1.0.0", features = ["print-defmt"] }
+embassy-time = "0.4.0"
+i2c-character-display = "0.4"
+# onewire = { git = "https://github.com/rkuris/onewire.git" }
+panic-probe = "1.0.0"
+# arrayvec = { version = "0.7.6", default-features = false }
+itoa = "1.0.15"
 
 [profile.release]
+strip = true
 lto = "fat"
 opt-level = "z"
 debug = 0
