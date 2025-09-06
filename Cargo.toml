@@ -18,17 +18,14 @@ embassy-stm32 = { version = "0.2.0", features = [
     "stm32f103c8",
 ] }
 embassy-time = "0.4.0"
-i2c-character-display = "0.4"
-# onewire = { git = "https://github.com/rkuris/onewire.git" }
+embedded-graphics = "0.8.1"
+heapless = "0.9.1"
 panic-probe = "1.0.0"
-# arrayvec = { version = "0.7.6", default-features = false }
-itoa = "1.0.15"
+ssd1306 = "0.10.0"
 
 [profile.release]
 strip = true
 lto = "fat"
-opt-level = "z"
-debug = 0
+opt-level = "s"
+debug = false
 overflow-checks = false
-panic = "abort"
-codegen-units = 1

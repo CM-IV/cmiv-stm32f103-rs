@@ -1,0 +1,92 @@
+#![no_main]
+#![no_std]
+
+use embassy_executor::Spawner;
+use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::{i2c::I2c, mode::Blocking, time::Hertz};
+use embassy_time::Timer;
+use embedded_graphics::Drawable;
+use embedded_graphics::text::Baseline;
+use embedded_graphics::{
+    mono_font::{MonoTextStyleBuilder, ascii::FONT_6X10},
+    pixelcolor::BinaryColor,
+    prelude::Point,
+    text::Text,
+};
+use panic_probe as _;
+use ssd1306::{I2CDisplayInterface, Ssd1306, mode::DisplayConfig, size::DisplaySize128x32};
+
+// Define custom error type
+#[derive(Debug)]
+enum AppError {
+    DisplayInit,
+    DrawError,
+    FlushError,
+    I2cError,
+}
+
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
+    let p = embassy_stm32::init(Default::default());
+
+    let mut led = Output::new(p.PA7, Level::Low, Speed::Low);
+
+    let i2c = I2c::new_blocking(p.I2C2, p.PB10, p.PB11, Hertz::khz(400), Default::default());
+
+    // Handle the result of run_main_loop
+    if let Err(e) = run_main_loop(i2c).await {
+        error_blink_loop(&mut led, e).await;
+    }
+}
+
+async fn run_main_loop(i2c: I2c<'static, Blocking>) -> Result<(), AppError> {
+    let interface = I2CDisplayInterface::new_custom_address(i2c, 0x3C);
+
+    let mut display = Ssd1306::new(
+        interface,
+        DisplaySize128x32,
+        ssd1306::prelude::DisplayRotation::Rotate0,
+    )
+    .into_buffered_graphics_mode();
+
+    display.init().map_err(|_| AppError::DisplayInit)?;
+
+    let text_style = MonoTextStyleBuilder::new()
+        .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    Text::with_baseline("Hello, Rust!", Point::new(0, 16), text_style, Baseline::Top)
+        .draw(&mut display)
+        .map_err(|_| AppError::DrawError)?;
+
+    display.flush().map_err(|_| AppError::FlushError)?;
+
+    // Main operational loop - if we reach here, everything is working
+    loop {
+        Timer::after_secs(1).await;
+    }
+}
+
+async fn error_blink_loop(led: &mut Output<'_>, error: AppError) {
+    // Different, very long blink patterns based on error type for multimeter measurement
+    let (on_time_ms, off_time_ms, pattern_repeats) = match error {
+        AppError::DisplayInit => (2000, 1000, 2), // 2 long blinks (2s on, 1s off)
+        AppError::DrawError => (2000, 1000, 3),   // 3 long blinks
+        AppError::FlushError => (2000, 1000, 4),  // 4 long blinks
+        AppError::I2cError => (500, 1500, 5),     // 5 shorter blinks (0.5s on, 1.5s off)
+    };
+
+    loop {
+        // Blink the specific pattern for this error
+        for _ in 0..pattern_repeats {
+            led.set_high(); // LED ON - Multimeter should read ~3.3V
+            Timer::after_millis(on_time_ms).await;
+            led.set_low(); // LED OFF - Multimeter should read ~0V
+            Timer::after_millis(off_time_ms).await;
+        }
+
+        // Long pause between complete patterns to clearly separate them
+        Timer::after_millis(3000).await;
+    }
+}
