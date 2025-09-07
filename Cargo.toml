@@ -17,10 +17,13 @@ embassy-stm32 = { version = "0.2.0", features = [
     "time-driver-any",
     "stm32f103c8",
 ] }
+embassy-sync = "0.7.2"
 embassy-time = "0.4.0"
 embedded-graphics = "0.8.1"
+embedded-hal-bus = "0.3.0"
 heapless = "0.9.1"
 panic-probe = "1.0.0"
+sht31 = "0.3.2"
 ssd1306 = "0.10.0"
 
 [profile.release]
