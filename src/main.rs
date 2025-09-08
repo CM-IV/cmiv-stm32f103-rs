@@ -3,6 +3,7 @@
 
 use core::cell::RefCell;
 use core::fmt::Write;
+use cortex_m::asm::nop;
 use embassy_executor::{Spawner, task};
 use embassy_stm32::Peripherals;
 use embassy_stm32::i2c::I2c;
@@ -117,13 +118,15 @@ async fn setup_io(p: Peripherals) -> (UartTx<'static, Blocking>, I2c<'static, Bl
 #[task]
 async fn uart_writer(mut tx: UartTx<'static, Blocking>) {
     loop {
-        let message = UART_CHANNEL.receive().await; // No Option wrapping
+        let message = UART_CHANNEL.receive().await;
         send_uart_message(&mut tx, &message).ok();
     }
 }
 
 #[task]
-async fn read_temp(i2c: I2c<'static, Blocking>) {
+async fn start(i2c: I2c<'static, Blocking>) {
+    let mut msg: String<256> = String::new();
+
     let i2c_refcell = RefCell::new(i2c);
     let i2c_device1 = i2c::RefCellDevice::new(&i2c_refcell);
     let i2c_device2 = i2c::RefCellDevice::new(&i2c_refcell);
@@ -141,45 +144,42 @@ async fn read_temp(i2c: I2c<'static, Blocking>) {
 
     if let Err(e) = display.init() {
         loop {
-            let mut error_msg: String<256> = String::new();
-            write!(&mut error_msg, "Display Error: {:?}\r\n", e).ok();
-            UART_CHANNEL.send(error_msg).await;
+            write!(&mut msg, "Display Error: {:?}\r\n", e).ok();
+            UART_CHANNEL.send(msg.clone()).await;
             Timer::after_secs(3).await;
         }
     };
 
-    let mut success_msg: String<256> = String::new();
-    write!(&mut success_msg, "===Display OK!===\r\n").ok();
-    UART_CHANNEL.send(success_msg).await;
+    write!(&mut msg, "===Program Start===\r\n").ok();
+    UART_CHANNEL.send(msg.clone()).await;
+    msg.clear();
+
+    write!(&mut msg, "===Display OK!===\r\n").ok();
+    UART_CHANNEL.send(msg.clone()).await;
+    msg.clear();
 
     let mut sht = SHT31::new(i2c_device2, Delay);
 
-    let mut temp_setup_msg: String<256> = String::new();
-    write!(&mut temp_setup_msg, "===Temp Setup===\r\n").ok();
-    UART_CHANNEL.send(temp_setup_msg).await;
+    write!(&mut msg, "===Temp Setup===\r\n").ok();
+    UART_CHANNEL.send(msg.clone()).await;
+    msg.clear();
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
         .text_color(BinaryColor::On)
         .build();
 
-    // Continuous reading loop
     loop {
         match sht.read() {
             Ok(reading) => {
                 display.clear_buffer();
 
-                let mut temp_str = String::<32>::new();
-                write!(&mut temp_str, "Temp: {:.1}F", reading.temperature).unwrap();
+                msg.clear();
+                write!(&mut msg, "Temp: {:.1}F", reading.temperature).unwrap();
 
-                let mut uart_msg: String<256> = String::new();
-                write!(
-                    &mut uart_msg,
-                    "Temperature: {:.1}F\r\n",
-                    reading.temperature
-                )
-                .ok();
-                UART_CHANNEL.send(uart_msg).await;
+                msg.clear();
+                write!(&mut msg, "Temperature: {:.1}F\r\n", reading.temperature).ok();
+                UART_CHANNEL.send(msg.clone()).await;
 
                 Text::with_baseline(
                     "Systems Normal",
@@ -190,16 +190,16 @@ async fn read_temp(i2c: I2c<'static, Blocking>) {
                 .draw(&mut display)
                 .unwrap();
 
-                Text::with_baseline(&temp_str, Point::new(0, 16), text_style, Baseline::Top)
+                Text::with_baseline(&msg, Point::new(0, 16), text_style, Baseline::Top)
                     .draw(&mut display)
                     .unwrap();
 
                 display.flush().unwrap();
             }
-            Err(e) => {
-                let mut error_msg: String<256> = String::new();
-                write!(&mut error_msg, "Sensor Error: {:?}\r\n", e).ok();
-                UART_CHANNEL.send(error_msg).await;
+            Err(_) => {
+                msg.clear();
+                msg.push_str("Sensor Error\r\n").ok();
+                UART_CHANNEL.send(msg.clone()).await;
             }
         }
 
@@ -214,17 +214,10 @@ async fn main(spawner: Spawner) {
     let (tx, i2c) = setup_io(p).await;
 
     spawner.spawn(uart_writer(tx)).ok();
-
-    let mut start_msg: String<256> = String::new();
-    write!(&mut start_msg, "===Program Start===\r\n").ok();
-    UART_CHANNEL.send(start_msg).await;
-
-    spawner.spawn(read_temp(i2c)).ok();
+    spawner.spawn(start(i2c)).ok();
 
     loop {
-        let mut running_msg: String<256> = String::new();
-        write!(&mut running_msg, "Program Running!\r\n").ok();
-        UART_CHANNEL.send(running_msg).await;
+        nop();
         Timer::after_secs(10).await;
     }
 }
