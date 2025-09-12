@@ -20,6 +20,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Delay, Timer};
 use embedded_graphics::Drawable;
+use embedded_graphics::mono_font::ascii::FONT_9X15;
 use embedded_graphics::text::Baseline;
 use embedded_graphics::{
     mono_font::{MonoTextStyleBuilder, ascii::FONT_6X10},
@@ -154,18 +155,15 @@ async fn start(i2c: I2c<'static, Blocking>) {
     UART_CHANNEL.send(msg.clone()).await;
     msg.clear();
 
-    write!(&mut msg, "===Display OK!===\r\n").ok();
-    UART_CHANNEL.send(msg.clone()).await;
-    msg.clear();
-
     let mut sht = SHT31::new(i2c_device2, Delay);
-
-    write!(&mut msg, "===Temp Setup===\r\n").ok();
-    UART_CHANNEL.send(msg.clone()).await;
-    msg.clear();
 
     let text_style = MonoTextStyleBuilder::new()
         .font(&FONT_6X10)
+        .text_color(BinaryColor::On)
+        .build();
+
+    let text_style_bigger = MonoTextStyleBuilder::new()
+        .font(&FONT_9X15)
         .text_color(BinaryColor::On)
         .build();
 
@@ -175,10 +173,7 @@ async fn start(i2c: I2c<'static, Blocking>) {
                 display.clear_buffer();
 
                 msg.clear();
-                write!(&mut msg, "Temp: {:.1}F", reading.temperature).unwrap();
-
-                msg.clear();
-                write!(&mut msg, "Temperature: {:.1}F\r\n", reading.temperature).ok();
+                write!(&mut msg, "Temp: {:.1}F\r\n", reading.temperature).ok();
                 UART_CHANNEL.send(msg.clone()).await;
 
                 Text::with_baseline(
@@ -190,7 +185,7 @@ async fn start(i2c: I2c<'static, Blocking>) {
                 .draw(&mut display)
                 .unwrap();
 
-                Text::with_baseline(&msg, Point::new(0, 16), text_style, Baseline::Top)
+                Text::with_baseline(&msg, Point::new(0, 16), text_style_bigger, Baseline::Top)
                     .draw(&mut display)
                     .unwrap();
 
